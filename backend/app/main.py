@@ -3,10 +3,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 from typing import Optional
-import hashlib, secrets, time, smtplib
-from email.message import EmailMessage
+import hashlib, secrets, time, requests
 from fastapi.staticfiles import StaticFiles
-from .config import CORS_ORIGINS, OPENCHARGEMAP_API_KEY, EV_ADMIN_TOKEN, BEE_API_BASE, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM, VEHICLE_INGEST_TOKEN
+from .config import CORS_ORIGINS, OPENCHARGEMAP_API_KEY, EV_ADMIN_TOKEN, BEE_API_BASE, RESEND_API_KEY, EMAIL_FROM, VEHICLE_INGEST_TOKEN
 from .data import VEHICLES, vehicle_with_defaults
 from .models import ProfileIn, PurchaseIn, PlanIn
 from .db import init_db, upsert_owner, get_owner, add_purchase, add_route, list_owners, list_purchases, list_routes, delete_owner, delete_purchase, clear_all, save_otp, check_otp, email_verified, save_telemetry, get_telemetry
@@ -37,19 +36,69 @@ class TelemetryIn(BaseModel):
     lng: Optional[float] = Field(default=None,ge=67,le=99)
     speed_kmh: Optional[float] = Field(default=None,ge=0,le=500)
 
+
 @app.post("/api/auth/request-otp")
-def request_otp(req:OTPRequest):
-    if not SMTP_HOST or not SMTP_USER or not SMTP_PASSWORD or not SMTP_FROM:
-        raise HTTPException(503,"Email OTP is not configured. Set SMTP_HOST, SMTP_USER, SMTP_PASSWORD and SMTP_FROM in backend/.env")
-    otp=f"{secrets.randbelow(1000000):06d}"
-    save_otp(req.email,hashlib.sha256((req.email.lower()+otp).encode()).hexdigest(),time.time()+600)
-    msg=EmailMessage(); msg["Subject"]="Your EVChargeRoute verification code"; msg["From"]=SMTP_FROM; msg["To"]=req.email
-    msg.set_content(f"Your EVChargeRoute verification code is {otp}. It expires in 10 minutes. If you did not request it, ignore this email.")
+def request_otp(req: OTPRequest):
+    if not RESEND_API_KEY or not EMAIL_FROM:
+        raise HTTPException(
+            503,
+            "Email OTP is not configured. Set RESEND_API_KEY and EMAIL_FROM in Render."
+        )
+
+    otp = f"{secrets.randbelow(1000000):06d}"
+
+    payload = {
+        "from": EMAIL_FROM,
+        "to": [req.email],
+        "subject": "Your EVChargeRoute verification code",
+        "text": (
+            f"Your EVChargeRoute verification code is {otp}. "
+            "It expires in 10 minutes. If you did not request it, ignore this email."
+        ),
+        "html": (
+            f"<h2>EVChargeRoute Email Verification</h2>"
+            f"<p>Your verification code is:</p>"
+            f"<h1>{otp}</h1>"
+            f"<p>This code expires in 10 minutes.</p>"
+            f"<p>If you did not request it, ignore this email.</p>"
+        )
+    }
+
     try:
-        with smtplib.SMTP(SMTP_HOST,SMTP_PORT,timeout=15) as server:
-            server.starttls(); server.login(SMTP_USER,SMTP_PASSWORD); server.send_message(msg)
-    except Exception as e: raise HTTPException(502,f"Could not send verification email: {e}")
-    return {"sent":True,"expires_in_seconds":600}
+        response = requests.post(
+            "https://api.resend.com/emails",
+            headers={
+                "Authorization": f"Bearer {RESEND_API_KEY}",
+                "Content-Type": "application/json"
+            },
+            json=payload,
+            timeout=20
+        )
+
+        if response.status_code >= 400:
+            raise HTTPException(
+                502,
+                f"Email provider error ({response.status_code}): {response.text[:300]}"
+            )
+
+        # Save the OTP only after the email provider accepts the request.
+        save_otp(
+            req.email,
+            hashlib.sha256(
+                (req.email.lower() + otp).encode()
+            ).hexdigest(),
+            time.time() + 600
+        )
+
+    except requests.RequestException:
+        raise HTTPException(
+            502,
+            "Could not connect to the email provider. Please try again."
+        )
+
+    return {"sent": True, "expires_in_seconds": 600}
+
+
 @app.post("/api/auth/verify-otp")
 def verify_otp(req:OTPVerify):
     digest=hashlib.sha256((req.email.lower()+req.otp).encode()).hexdigest()

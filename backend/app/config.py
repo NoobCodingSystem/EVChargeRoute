@@ -20,3 +20,7 @@ SMTP_USER = os.getenv("SMTP_USER", "").strip()
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "").strip()
 SMTP_FROM = os.getenv("SMTP_FROM", SMTP_USER).strip()
 VEHICLE_INGEST_TOKEN = os.getenv("VEHICLE_INGEST_TOKEN", "").strip()
+
+
+RESEND_API_KEY = os.getenv("RESEND_API_KEY", "").strip()
+EMAIL_FROM = os.getenv("EMAIL_FROM", "onboarding@resend.dev").strip()
