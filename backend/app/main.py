@@ -116,10 +116,24 @@ def ingest_telemetry(req:TelemetryIn,x_vehicle_token:str=Header(default="")):
     return {"accepted":True,"updated":True}
 
 @app.post("/api/profile")
-def save_profile(req:ProfileIn):
-    if not email_verified(req.email,time.time()): raise HTTPException(403,"Verify this email address with the OTP before saving a profile")
-    if req.vehicle_id not in VEHICLES: raise HTTPException(400,"Unknown vehicle model")
+def save_profile(req: ProfileIn):
+    # Validate the selected vehicle.
+    if req.vehicle_id not in VEHICLES:
+        raise HTTPException(400, "Unknown vehicle model")
+
+    # Check whether this email already belongs to a saved profile.
+    existing_owner = get_owner(email=req.email)
+
+    # OTP is optional for a brand-new profile.
+    # However, OTP is required before an existing profile can be updated.
+    if existing_owner and not email_verified(req.email, time.time()):
+        raise HTTPException(
+            status_code=403,
+            detail="This email already has a saved profile. Verify your email with OTP before updating it."
+        )
+
     return upsert_owner(req.model_dump())
+
 @app.get("/api/profile")
 def load_profile(email:str=Query(min_length=3,max_length=180)):
     if not email_verified(email,time.time()): raise HTTPException(403,"Verify this email address with the OTP before loading a profile")
